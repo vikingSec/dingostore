@@ -1,0 +1,30 @@
+run with no compaction:
+Read complete. Time elapsed: 278.08552675s
+Average read time: 2.780408ms
+Successfully read and verified 100000 out of 100000 entries
+Missing entries: 0
+Incorrect entries: 0
+Total misses: 0 (0.00% of total reads)
+Total operation time: 288.067753958s
+
+Summary Statistics:
+Total write time: 9.982192666s
+Average write time: 79.225µs
+Total read time: 278.08552675s
+Average read time: 2.780408ms
+----
+run with better indexing, no compaction:
+Read complete. Time elapsed: 196.603335245s
+Average read time: 1.965777ms
+Successfully read and verified 100000 out of 100000 entries
+Missing entries: 0
+Incorrect entries: 0
+Total misses: 0 (0.00% of total reads)
+Total operation time: 204.343581977s
+
+Summary Statistics:
+Total write time: 7.740240149s (-2.2419s / 22% faster)
+Average write time: 61.299µs (17.926us / 22% faster)
+Total read time: 196.603335245s (81.4822s / 29% faster)
+Average read time: 1.965777ms (0.8147ms / 29% faster)
+

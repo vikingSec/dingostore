@@ -1,14 +1,11 @@
 use std::{collections::BTreeMap, fmt::{Debug, Display, Formatter}, time::{SystemTime, UNIX_EPOCH}};
-use std::any::Any;
 use std::mem::size_of_val;
 use std::fs::{File, OpenOptions};
 use std::io::{Write, BufReader, Read};
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 
 const SIZE_THRESH: u32 = 80000;
-
+const COMPACT_LIM: usize = 10;
 pub trait Serializable: Debug + Display {
     fn serialize(&self) -> Vec<u8>;
     fn deserialize(bytes: &[u8]) -> Self where Self: Sized;
@@ -28,8 +25,7 @@ pub struct DingoStore<'a> {
     keys: Vec<u64>,
     fname: &'a str,
     treesize: u32,
-    flushed_files: Arc<Mutex<BTreeMap<String, String>>>,
-    index: Arc<Mutex<BTreeMap<u64, String>>>,
+    flushed_files: Arc<Mutex<BTreeMap<u64, String>>>,
 }
 
 impl<'a> DingoStore<'a> {
@@ -40,10 +36,9 @@ impl<'a> DingoStore<'a> {
             objs: BTreeMap::new(),
             treesize: 0,
             flushed_files: Arc::new(Mutex::new(BTreeMap::new())),
-            index: Arc::new(Mutex::new(BTreeMap::new())),
         } 
     }
-
+    
     pub fn insert(&mut self, key: u64, val: String, flush: bool) -> (u64, String) {
         let new_size = self.treesize + std::mem::size_of::<u64>() as u32 + size_of_val(&val) as u32;
         
@@ -84,16 +79,19 @@ impl<'a> DingoStore<'a> {
         if let Some(val) = self.objs.get(&key) {
             return Some(val.clone());
         }
-
-        let index = self.index.lock().unwrap();
-        if let Some(data_filename) = index.get(&key) {
-            let tempds = self.try_deserialize(data_filename);
-            if let Ok(store) = tempds {
-                if let Some(val) = store.objs.get(&key) {
-                    return Some(val.clone());
-                }
-            }
+        let flushed_files = self.flushed_files.lock().unwrap();
+        let mut idx = 0;
+        let keys = flushed_files.keys().collect::<Vec<&u64>>();
+        while idx < keys.len() && keys[idx] <= &key {
+            idx+=1;
         }
+        let tempds = self.try_deserialize(flushed_files.get(&(keys[idx-1])).unwrap()).unwrap();
+        if let Some(val) = tempds.objs.get(&key) {
+            return Some(val.clone());
+        }else{
+            println!("miss...");
+        }
+        
         None
     }
 
@@ -128,32 +126,6 @@ impl<'a> DingoStore<'a> {
         Ok(new_store)
     }
 
-    // pub fn delete(&mut self, key: u64) -> Option<String> {
-    //     if let Some(val) = self.objs.remove(&key) {
-    //         self.treesize -= std::mem::size_of::<u64>() as u32;
-    //         self.treesize -= size_of_val(&val) as u32;
-    //         self.keys.retain(|&k| k != key);
-    //         Some(val)
-    //     } else {
-    //         let mut index = self.index.lock().unwrap();
-    //         if let Some(data_filename) = index.remove(&key) {
-    //             let tempds = self.try_deserialize(&data_filename);
-    //             if let Ok(mut store) = tempds {
-    //                 if let Some(val) = store.objs.remove(&key) {
-    //                     // Update the file without the deleted key-value pair
-    //                     self.flush(&mut store, &data_filename);
-    //                     Some(val)
-    //                 } else {
-    //                     None
-    //                 }
-    //             } else {
-    //                 None
-    //             }
-    //         } else {
-    //             None
-    //         }
-    //     }
-    // }
 
     pub fn deserialize(filename: &'a str) -> Option<Self> {
         let mut new_store = DingoStore::new(filename);
@@ -164,7 +136,7 @@ impl<'a> DingoStore<'a> {
         None
     }
 
-    fn flush(&mut self) {
+    fn flush(&mut self) -> String {
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
         let data_fname = format!("{}_{}.data", self.fname, ts);
         let mut data_file = OpenOptions::new()
@@ -172,38 +144,31 @@ impl<'a> DingoStore<'a> {
             .create(true)
             .open(&data_fname)
             .unwrap();
-        let mut index = self.index.lock().unwrap();
-
+        let mut firstkey : Option<u64> = None;
         for (key, val) in &self.objs {
+            if firstkey.is_none() {
+                firstkey = Some(*key);
+            }
             let bytes = self.serialize(*key, val);
             
             // Write to data file
             data_file.write_all(&bytes).unwrap();
             
             // Update index
-            index.insert(*key, data_fname.clone());
         }
         
         data_file.sync_all().unwrap();
         
         let mut flushed_files = self.flushed_files.lock().unwrap();
-        flushed_files.insert(data_fname.clone(), data_fname);
+        // need to look at this...
+        flushed_files.insert(firstkey.unwrap(), data_fname.clone());
         self.objs.clear();
         self.treesize = 0;
-        
+        data_fname
+
     }
     fn compact(&mut self) {
-        let mut flushed_files = self.flushed_files.lock().unwrap();
-        let mut index = self.index.lock().unwrap();
-        let mut masterstore = DingoStore::new(self.fname); 
-        for (_, filename) in flushed_files.iter() {
-            if let Ok(store) = self.try_deserialize(filename) {
-                for (key, value) in store.objs {
-                    masterstore.insert(key, value, false);
-                }
-            }
-        }
-        masterstore.flush();
+        
     }
     pub fn clone(&self) -> Self {
         let mut new_store = DingoStore::new(self.fname);
@@ -211,7 +176,6 @@ impl<'a> DingoStore<'a> {
         new_store.keys = self.keys.clone();
         new_store.treesize = self.treesize;
         new_store.flushed_files = Arc::clone(&self.flushed_files);
-        new_store.index = Arc::clone(&self.index);
         new_store
     }
 }

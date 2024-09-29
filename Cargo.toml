@@ -9,3 +9,4 @@ tokio = { version = "1.0", features = ["full"] }
 dashmap = "5.4.0"
 memmap2 = "0.5.10"
 libc = "0.2.159"
+axum = "0.7.7"
