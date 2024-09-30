@@ -5,6 +5,17 @@ use rand::{thread_rng, Rng};
 use rand::distributions::Alphanumeric;
 use tokio;
 
+// LIMITATIONS:
+// - Currently no compaction. This means that as writes increase, so will the # of SSTables and
+// reads will slow down. Will implement this soon
+// - Currently no Write Ahead Log (WAL), so upon death of the server, KVs are lost. I will
+// implement this soon.
+// - Keys must be of type u64. String keys are nice, but they lead to variable length keys, which
+// can slow down reads a bit. I'm thinking about implementing them anyways and having a type switch
+// to discern between which type of key is used.
+// - Not aligned to SSD blocks. I wanted to finish implementing this but want to do more testing.
+
+
 fn generate_random_string(len: usize) -> String {
     thread_rng()
         .sample_iter(&Alphanumeric)
@@ -30,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         key_value_pairs.push((key, value.clone()));
         
         let write_start = Instant::now();
-        ds.insert(key, value, true);
+        ds.insert(key, value);
         total_write_time += write_start.elapsed();
         
         if (i + 1) % 10000 == 0 {

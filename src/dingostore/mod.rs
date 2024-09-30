@@ -8,37 +8,39 @@ const SIZE_THRESH: u32 = 80000;
 
 
 pub struct DingoStore<'a> {
-    objs: BTreeMap<u64, String>,
+    objs: Mutex<BTreeMap<u64, String>>,
     fname: &'a str,
     treesize: u32,
-    flushed_files: Arc<Mutex<BTreeMap<u64, String>>>,
+    flushed_files: Mutex<BTreeMap<u64, String>>,
 }
 
 impl<'a> DingoStore<'a> {
     pub fn new(fname: &'a str) -> DingoStore<'a> {
         DingoStore {
             fname, 
-            objs: BTreeMap::new(),
+            objs: Mutex::new(BTreeMap::new()),
             treesize: 0,
-            flushed_files: Arc::new(Mutex::new(BTreeMap::new())),
+            flushed_files: Mutex::new(BTreeMap::new()),
         } 
     }
     
-    pub fn insert(&mut self, key: u64, val: String, flush: bool) -> (u64, String) {
+    pub fn insert(&mut self, key: u64, val: String, ) -> (u64, String) {
         let new_size = self.treesize + std::mem::size_of::<u64>() as u32 + size_of_val(&val) as u32;
-        
-        if new_size > SIZE_THRESH  && flush{
+        if new_size > SIZE_THRESH  {
             self.flush();
-            self.objs.insert(key, val.clone());
+            let mut objs = self.objs.lock().unwrap(); 
+            objs.insert(key, val.clone());
             self.treesize = std::mem::size_of::<u64>() as u32 + size_of_val(&val) as u32;
         } else {
-            if let Some(old_val) = self.objs.get(&key) {
+
+            let mut objs = self.objs.lock().unwrap();
+            if let Some(old_val) = objs.get(&key) {
                 self.treesize -= size_of_val(old_val) as u32;
             } else {
                 self.treesize += std::mem::size_of::<u64>() as u32;
             }
             self.treesize += size_of_val(&val) as u32;
-            self.objs.insert(key, val.clone());
+            objs.insert(key, val.clone());
         }
         (key, val)
     }
@@ -80,7 +82,8 @@ impl<'a> DingoStore<'a> {
     }
     pub fn get(&self, key: u64) -> Option<String> {
         // Check in-memory store first
-        if let Some(val) = self.objs.get(&key) {
+        let objs = self.objs.lock().unwrap();
+        if let Some(val) = objs.get(&key) {
             return Some(val.clone());
         }
         let flushed_files = self.flushed_files.lock().unwrap();
@@ -107,13 +110,14 @@ impl<'a> DingoStore<'a> {
     fn flush(&mut self) -> String {
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
         let data_fname = format!("{}_{}.data", self.fname, ts);
+        let mut objs = self.objs.lock().unwrap();
         let mut data_file = OpenOptions::new()
             .write(true)
             .create(true)
             .open(&data_fname)
             .unwrap();
         let mut firstkey : Option<u64> = None;
-        for (key, val) in &self.objs {
+        for (key, val) in objs.iter(){
             if firstkey.is_none() {
                 firstkey = Some(*key);
             }
@@ -129,7 +133,7 @@ impl<'a> DingoStore<'a> {
         
         let mut flushed_files = self.flushed_files.lock().unwrap();
         flushed_files.insert(firstkey.unwrap(), data_fname.clone());
-        self.objs.clear();
+        objs.clear();
         self.treesize = 0;
         data_fname
 
