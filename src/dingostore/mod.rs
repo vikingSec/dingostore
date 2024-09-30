@@ -1,15 +1,10 @@
 use std::{collections::BTreeMap, fmt::{Debug, Display, Formatter}, time::{SystemTime, UNIX_EPOCH}};
-use std::io::{BufRead, Seek, BufReader};
-use std::io::prelude::*;
-use std::fs::File;
-use std::io::SeekFrom;
 use std::mem::size_of_val;
-use std::fs::{OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Write, Read};
 use std::sync::{Arc, Mutex};
 
 const SIZE_THRESH: u32 = 80000;
-const COMPACT_LIM: usize = 10;
 
 
 pub struct DingoStore<'a> {
@@ -108,37 +103,6 @@ impl<'a> DingoStore<'a> {
         }
     }
 
-    fn try_deserialize(&self, filename: &str) -> Result<Self, std::io::Error> {
-        let file = File::open(filename)?;
-        let mut reader = BufReader::new(file);
-        let mut new_store = DingoStore::new(self.fname);
-
-        loop {
-            let mut key_bytes = [0u8; 8];
-            let mut val_len_bytes = [0u8; 4];
-            
-            if reader.read_exact(&mut key_bytes).is_err() {
-                break; // End of file
-            }
-            if reader.read_exact(&mut val_len_bytes).is_err() {
-                break; // Unexpected end of file
-            }
-            
-            let key = u64::from_be_bytes(key_bytes);
-            let val_len = u32::from_be_bytes(val_len_bytes) as usize;
-            
-            let mut val_bytes = vec![0u8; val_len];
-            reader.read_exact(&mut val_bytes)?;
-            
-            let val = String::from_utf8(val_bytes).unwrap();
-            
-            new_store.objs.insert(key, val);
-            new_store.treesize += (std::mem::size_of::<u64>() + val_len) as u32;
-        }
-        Ok(new_store)
-    }
-
-
 
     fn flush(&mut self) -> String {
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
@@ -164,21 +128,11 @@ impl<'a> DingoStore<'a> {
         data_file.sync_all().unwrap();
         
         let mut flushed_files = self.flushed_files.lock().unwrap();
-        // need to look at this...
         flushed_files.insert(firstkey.unwrap(), data_fname.clone());
         self.objs.clear();
         self.treesize = 0;
         data_fname
 
     }
-    fn compact(&mut self) {
-        
-    }
-    pub fn clone(&self) -> Self {
-        let mut new_store = DingoStore::new(self.fname);
-        new_store.objs = self.objs.clone();
-        new_store.treesize = self.treesize;
-        new_store.flushed_files = Arc::clone(&self.flushed_files);
-        new_store
-    }
+    
 }
