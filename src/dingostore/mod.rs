@@ -1,28 +1,19 @@
 use std::{collections::BTreeMap, fmt::{Debug, Display, Formatter}, time::{SystemTime, UNIX_EPOCH}};
+use std::io::{BufRead, Seek, BufReader};
+use std::io::prelude::*;
+use std::fs::File;
+use std::io::SeekFrom;
 use std::mem::size_of_val;
-use std::fs::{File, OpenOptions};
-use std::io::{Write, BufReader, Read};
+use std::fs::{OpenOptions};
+use std::io::{Write, Read};
 use std::sync::{Arc, Mutex};
 
 const SIZE_THRESH: u32 = 80000;
 const COMPACT_LIM: usize = 10;
-pub trait Serializable: Debug + Display {
-    fn serialize(&self) -> Vec<u8>;
-    fn deserialize(bytes: &[u8]) -> Self where Self: Sized;
-}
 
-impl Serializable for String {
-    fn serialize(&self) -> Vec<u8> {
-        self.as_bytes().to_vec()
-    }
-    fn deserialize(bytes: &[u8]) -> Self {
-        String::from_utf8(bytes.to_vec()).unwrap()
-    }
-}
 
 pub struct DingoStore<'a> {
     objs: BTreeMap<u64, String>,
-    keys: Vec<u64>,
     fname: &'a str,
     treesize: u32,
     flushed_files: Arc<Mutex<BTreeMap<u64, String>>>,
@@ -32,7 +23,6 @@ impl<'a> DingoStore<'a> {
     pub fn new(fname: &'a str) -> DingoStore<'a> {
         DingoStore {
             fname, 
-            keys: vec![],
             objs: BTreeMap::new(),
             treesize: 0,
             flushed_files: Arc::new(Mutex::new(BTreeMap::new())),
@@ -55,13 +45,9 @@ impl<'a> DingoStore<'a> {
             self.treesize += size_of_val(&val) as u32;
             self.objs.insert(key, val.clone());
         }
-        self.keys = self.objs.keys().cloned().collect();
         (key, val)
     }
 
-    pub fn keys(&self) -> Vec<u64> {
-        self.keys.clone()
-    }
 
     fn serialize(&self, key: u64, val: &str) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -73,7 +59,30 @@ impl<'a> DingoStore<'a> {
         
         bytes
     }
+    fn seek_key(&self, filename: &String, key: u64) -> Option<Vec<u8>>{
+        let mut f = std::io::BufReader::new(std::fs::File::open(filename).unwrap()); 
+        let mut tempbuffer = [0u8; 8];
+        loop {
+            match f.read_exact(&mut tempbuffer) {
+                Err(_) => break,
+                Ok(_) => {
+                    let keyparse = u64::from_be_bytes(tempbuffer);
+                    let mut value_len_buffer = [0u8; 4];
+                    f.read_exact(&mut value_len_buffer); 
+                    let valuelen = u32::from_be_bytes(value_len_buffer);
+                    let mut valbuff = vec![0u8; valuelen as usize];
+                    f.read_exact(&mut valbuff).unwrap();
+                    if keyparse == key {
+                        return Some(valbuff);
+                    }
 
+                }
+            }
+
+        } 
+
+        return None;
+    }
     pub fn get(&self, key: u64) -> Option<String> {
         // Check in-memory store first
         if let Some(val) = self.objs.get(&key) {
@@ -85,14 +94,18 @@ impl<'a> DingoStore<'a> {
         while idx < keys.len() && keys[idx] <= &key {
             idx+=1;
         }
-        let tempds = self.try_deserialize(flushed_files.get(&(keys[idx-1])).unwrap()).unwrap();
-        if let Some(val) = tempds.objs.get(&key) {
-            return Some(val.clone());
-        }else{
-            println!("miss...");
+        let target_filename = flushed_files.get(&(keys[idx-1])).unwrap();
+        let find_res = self.seek_key(target_filename, key);
+        match find_res {
+            Some(v) => {
+
+                let value = String::from_utf8_lossy(&v);
+                return Some(value.to_string());
+            },
+            None => {
+                return None;
+            }
         }
-        
-        None
     }
 
     fn try_deserialize(&self, filename: &str) -> Result<Self, std::io::Error> {
@@ -122,19 +135,10 @@ impl<'a> DingoStore<'a> {
             new_store.objs.insert(key, val);
             new_store.treesize += (std::mem::size_of::<u64>() + val_len) as u32;
         }
-        new_store.keys = new_store.objs.keys().cloned().collect();
         Ok(new_store)
     }
 
 
-    pub fn deserialize(filename: &'a str) -> Option<Self> {
-        let mut new_store = DingoStore::new(filename);
-        let deserialized_store = new_store.try_deserialize(filename);
-        if let Ok(store) = deserialized_store {
-            return Some(store);
-        }
-        None
-    }
 
     fn flush(&mut self) -> String {
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
@@ -173,7 +177,6 @@ impl<'a> DingoStore<'a> {
     pub fn clone(&self) -> Self {
         let mut new_store = DingoStore::new(self.fname);
         new_store.objs = self.objs.clone();
-        new_store.keys = self.keys.clone();
         new_store.treesize = self.treesize;
         new_store.flushed_files = Arc::clone(&self.flushed_files);
         new_store
