@@ -14,6 +14,8 @@ use tokio;
 // can slow down reads a bit. I'm thinking about implementing them anyways and having a type switch
 // to discern between which type of key is used.
 // - Not aligned to SSD blocks. I wanted to finish implementing this but want to do more testing.
+// - I haven't tested this as much as I'd like
+// - Error handling and logging aren't ideal
 
 
 fn generate_random_string(len: usize) -> String {
